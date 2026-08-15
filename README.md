@@ -37,69 +37,51 @@ starten, im anderen mit dem Code beitreten.
 In diesem Modus läuft alles nur lokal im Browser — für das echte Spiel auf zwei
 Geräten braucht ihr den nächsten Schritt.
 
-## Firebase einrichten
+## Supabase einrichten
 
-Das ist einmalig, dauert ungefähr zehn Minuten und kostet nichts (der
-kostenlose Spark-Tarif reicht für ein Spiel zu zweit bei Weitem).
+Einmalig, ungefähr zehn Minuten, kostenlos. Drei Schritte.
 
 **1. Projekt anlegen**
 
-Auf [console.firebase.google.com](https://console.firebase.google.com) mit
-einem Google-Konto anmelden → *Projekt hinzufügen* → Name z. B. `schaetzduell`.
-Google Analytics könnt ihr abwählen.
+Auf [supabase.com](https://supabase.com) anmelden → *New project*. Name frei
+wählbar, als Region etwas in Europa (z. B. *Frankfurt*). Das Datenbank-Passwort
+wird beim Anlegen abgefragt — ihr braucht es für das Spiel nicht, aber notiert
+es euch trotzdem. Das Aufsetzen dauert ein, zwei Minuten.
 
-**2. Realtime Database anlegen**
+**2. Tabellen anlegen**
 
-Links im Menü *Build → Realtime Database → Datenbank erstellen*.
-Als Region **`europe-west1`** wählen. Beim Sicherheitsmodus ist es egal, was
-ihr auswählt — die Regeln ersetzt ihr gleich in Schritt 3.
+Links im Menü *SQL Editor* → *New query*. Den kompletten Inhalt von
+[`supabase/schema.sql`](supabase/schema.sql) hineinkopieren und auf *Run*
+klicken. Das legt die beiden Tabellen an, erlaubt den Zugriff und schaltet die
+Live-Updates ein.
 
-> Wichtig: Die von Firebase vorgeschlagenen Testmodus-Regeln laufen nach 30
-> Tagen ab, danach würde das Spiel plötzlich nicht mehr funktionieren. Deshalb
-> unbedingt Schritt 3 machen.
+Das Skript darf gefahrlos mehrfach laufen — falls etwas schiefgeht, könnt ihr
+es einfach nochmal ausführen, ohne dass laufende Spiele kaputtgehen.
 
-**3. Regeln setzen**
+**3. Zugangsdaten eintragen**
 
-Im Reiter *Regeln* der Realtime Database alles markieren und hierdurch ersetzen:
+*Project Settings* (Zahnrad unten links) → *API*. Dort stehen zwei Werte:
 
-```json
-{
-  "rules": {
-    ".read": false,
-    ".write": false,
-    "games": {
-      "$code": {
-        ".read": "auth != null",
-        ".write": "auth != null",
-        ".validate": "$code.matches(/^[A-Z]{4}$/)"
-      }
-    }
-  }
-}
-```
+- **Project URL** — sieht aus wie `https://abcdefgh.supabase.co`
+- **anon public** — ein langer Schlüssel, der mit `eyJ…` anfängt
 
-Dann *Veröffentlichen*. Damit kommt nur an die Spieldaten heran, wer angemeldet
-ist und den vierstelligen Code kennt.
+Beides in [`js/config.js`](js/config.js) eintragen, fertig.
 
-**4. Anonyme Anmeldung aktivieren**
-
-*Build → Authentication → Los geht's → Sign-in-Methode → Anonym → aktivieren.*
-Ohne diesen Schritt verweigert die Datenbank den Zugriff; die App sagt euch
-das dann aber auch direkt.
-
-**5. Zugangsdaten eintragen**
-
-*Projektübersicht* → auf das Web-Symbol `</>` klicken → App-Name eingeben →
-*App registrieren*. Firebase zeigt euch einen Block `firebaseConfig = { … }`.
-Die Werte daraus in [`js/config.js`](js/config.js) eintragen.
-
-Achtet darauf, dass `databaseURL` dabei ist — wenn nicht, findet ihr die URL
-oben in der Realtime Database (Form:
-`https://PROJEKT-default-rtdb.europe-west1.firebasedatabase.app`).
-
-Diese Werte sind kein Geheimnis. Sie stehen bei jeder Firebase-Web-App offen im
-Quelltext; der Schutz kommt aus den Regeln von Schritt 3. Sie dürfen also
+Diese Werte sind kein Geheimnis. Der anon-Schlüssel ist genau dafür gemacht,
+offen im Browser zu stehen; geschützt wird über die Richtlinien aus Schritt 2
+und darüber, dass man den vierstelligen Spielcode kennen muss. Sie dürfen also
 committet werden.
+
+> **Wenn etwas nicht klappt:** Die App sagt euch, was fehlt. „Die
+> Datenbanktabellen fehlen" heißt, dass Schritt 2 noch nicht durchgelaufen ist;
+> „Der anon-Schlüssel wird nicht akzeptiert" heißt, dass in Schritt 3 etwas
+> Falsches eingetragen wurde (leicht passiert: der `service_role`-Schlüssel
+> steht direkt daneben, es muss aber **anon public** sein).
+
+> **Nach längerer Pause:** Kostenlose Supabase-Projekte werden nach etwa einer
+> Woche ohne Zugriff pausiert. Dann meldet die App, dass keine Verbindung
+> zustande kommt — im Supabase-Dashboard einmal auf *Restore* klicken, und es
+> läuft weiter. Wenn ihr regelmäßig spielt, passiert das gar nicht erst.
 
 ## Online stellen
 
@@ -112,8 +94,7 @@ einfachsten über GitHub Pages:
 3. Nach ein, zwei Minuten liegt das Spiel unter
    `https://johnbobie.github.io/spiel/`.
 
-Diese Adresse dann in Firebase unter *Authentication → Settings → Autorisierte
-Domains* hinzufügen, falls sie dort noch nicht steht.
+Supabase muss dafür nichts wissen — es gibt keine Domain-Freischaltung.
 
 ## Aufs Handy legen
 
@@ -165,14 +146,27 @@ node tools/check-questions.mjs
 ```
 index.html                 Gerüst
 css/styles.css             Gestaltung
-js/config.js               Firebase-Zugangsdaten (von euch auszufüllen)
+js/config.js               Supabase-Zugangsdaten (von euch auszufüllen)
 js/questions.js            Fragenkatalog
 js/scale.js                Regler-Skalen, Rundung, Zahlenformatierung
 js/scoring.js              Punkteberechnung
 js/transport.js            Verbindung zwischen den Geräten
 js/app.js                  Spielablauf und Oberfläche
+supabase/schema.sql        Tabellen, Zugriffsrechte, Live-Updates
 tools/check-questions.mjs  Prüfung des Fragenkatalogs
 ```
 
-Kein Build-Schritt, keine Abhängigkeiten außer dem Firebase-SDK, das direkt vom
-Google-CDN geladen wird.
+Kein Build-Schritt, keine Abhängigkeiten außer dem Supabase-Client, der direkt
+vom CDN geladen wird.
+
+### Wie die Geräte zusammenfinden
+
+Der Spielstand liegt in zwei Tabellen: `games` (wer spielt mit, welche Fragen,
+wer ist wie weit) und `answers` (eine Zeile pro abgegebener Schätzung). Dass
+jede Schätzung eine eigene Zeile bekommt, ist Absicht — so können beide Geräte
+gleichzeitig schreiben, ohne sich gegenseitig zu überschreiben.
+
+Änderungen kommen über Supabase Realtime sofort an. Zusätzlich schaut die App
+alle fünf Sekunden selbst nach, solange sie im Vordergrund ist. Das ist der
+Grund, warum das Spiel auch dann weiterläuft, wenn die Live-Verbindung mal
+klemmt — sie ist ein Beschleuniger, keine Voraussetzung.

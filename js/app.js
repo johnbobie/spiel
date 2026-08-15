@@ -6,7 +6,7 @@ import {
   formatValue, formatNumber, formatDeviation,
 } from './scale.js';
 import { scoreQuestion, tally, DUEL_BONUS } from './scoring.js';
-import { createTransport, isFirebaseConfigured, TransportError } from './transport.js';
+import { createTransport, isSupabaseConfigured, TransportError } from './transport.js';
 
 const QUESTIONS_PER_GAME = 10;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // ohne I und O
@@ -18,7 +18,7 @@ const app = document.getElementById('app');
 // Spieleridentität und laufendes Spiel liegen normalerweise im localStorage,
 // damit ein Gerät nach dem Schließen der App wieder dasselbe Spiel findet.
 // Im Testmodus wären beide Tabs sonst derselbe Spieler – dort also sessionStorage.
-const seat = () => (isFirebaseConfigured() ? localStorage : sessionStorage);
+const seat = () => (isSupabaseConfigured() ? localStorage : sessionStorage);
 
 const store = {
   get id() {
@@ -133,15 +133,13 @@ async function withBusy(fn) {
 
 async function startGame(name) {
   store.name = name;
-  const data = {
-    createdAt: Date.now(),
+  const setup = {
     questionIds: drawQuestionIds(QUESTIONS_PER_GAME),
-    p1: { id: store.id, name },
-    progress: { p1: 0, p2: 0 },
+    host: { id: store.id, name },
   };
   for (let attempt = 0; attempt < 6; attempt++) {
     const code = randomCode();
-    if (await state.transport.create(code, data)) {
+    if (await state.transport.createGame(code, setup)) {
       await enterGame(code, 'p1');
       return;
     }
@@ -151,7 +149,7 @@ async function startGame(name) {
 
 async function joinGame(name, code) {
   store.name = name;
-  const outcome = await state.transport.join(code, store.id, name);
+  const outcome = await state.transport.joinGame(code, store.id, name);
   if (outcome === 'missing') throw new Error(`Zum Code ${code} gibt es kein Spiel.`);
   if (outcome === 'full') throw new Error(`Das Spiel ${code} hat schon zwei Spieler.`);
   await enterGame(code, outcome);
@@ -186,28 +184,25 @@ function leaveGame() {
 }
 
 async function submitGuess(index, value) {
-  await state.transport.set(state.code, `answers/${index}/${state.slot}`, {
-    value, at: Date.now(),
-  });
+  await state.transport.submitAnswer(state.code, state.slot, index, value);
   state.draft = null;
 }
 
 async function advance(index) {
   state.draft = null;
-  await state.transport.set(state.code, `progress/${state.slot}`, index + 1);
+  await state.transport.setProgress(state.code, state.slot, index + 1);
 }
 
 async function startRematch() {
-  const winner = await state.transport.claim(state.code, 'rematch', randomCode());
-  const data = {
-    createdAt: Date.now(),
+  // Beide dürfen auf „Revanche" tippen; wer zuerst kommt, legt den Code fest.
+  const code = await state.transport.claimRematch(state.code, randomCode());
+  // Die Plätze bleiben wie gehabt, damit beide ihre Farbe und Punkte behalten.
+  await state.transport.createGame(code, {
     questionIds: drawQuestionIds(QUESTIONS_PER_GAME),
-    p1: { id: state.game.p1.id, name: state.game.p1.name },
-    p2: { id: state.game.p2.id, name: state.game.p2.name },
-    progress: { p1: 0, p2: 0 },
-  };
-  await state.transport.create(winner, data);
-  await enterGame(winner, state.slot);
+    host: state.game.p1,
+    guest: state.game.p2,
+  });
+  await enterGame(code, state.slot);
 }
 
 async function share(code) {
@@ -347,7 +342,7 @@ function screenHome() {
       }, 'Spiel beitreten')),
 
     state.transport?.kind === 'local' && el('p', { class: 'hint' },
-      'Testmodus: Firebase ist noch nicht eingerichtet, daher funktioniert das Spiel nur ',
+      'Testmodus: Supabase ist noch nicht eingerichtet, daher funktioniert das Spiel nur ',
       'zwischen zwei Tabs auf diesem Gerät. Die Einrichtung steht in der README.'));
 }
 
@@ -519,7 +514,7 @@ function screenFinal(game) {
 
 function screenSetupError(err) {
   return el('div', { class: 'screen' },
-    el('h2', { class: 'screen__title' }, 'Firebase-Verbindung klemmt'),
+    el('h2', { class: 'screen__title' }, 'Verbindung zur Datenbank klemmt'),
     el('div', { class: 'card card--error' },
       el('p', {}, err.message),
       err.hint && el('p', { class: 'hint' }, err.hint)),
@@ -624,7 +619,7 @@ async function boot() {
   }
 }
 
-if (!isFirebaseConfigured()) {
+if (!isSupabaseConfigured()) {
   console.info('Schätzduell läuft im lokalen Testmodus – js/config.js ausfüllen für echtes Zwei-Geräte-Spiel.');
 }
 

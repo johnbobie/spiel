@@ -1,25 +1,36 @@
 // Verbindung zwischen den Geräten.
 //
 // Zwei austauschbare Backends hinter derselben API:
-//   • firebase – Realtime Database, damit zwei echte Geräte zusammenspielen
+//   • supabase – Postgres + Realtime, damit zwei echte Geräte zusammenspielen
 //   • local    – localStorage + BroadcastChannel, damit man das Spiel auch
-//                ohne Firebase-Projekt in zwei Browser-Tabs ausprobieren kann
+//                ohne Supabase-Projekt in zwei Browser-Tabs ausprobieren kann
 //
 // Gemeinsame API:
-//   create(code, data)          -> true, wenn der Code noch frei war
-//   join(code, playerId, name)  -> 'p1' | 'p2' | 'full' | 'missing'
-//   watch(code, cb)             -> unsubscribe
-//   set(code, path, value)      -> Promise
-//   claim(code, path, value)    -> schreibt nur, wenn das Feld leer ist,
-//                                  und liefert immer den gültigen Wert zurück
+//   createGame(code, { questionIds, host, guest? })  -> true, wenn der Code frei war
+//   joinGame(code, playerId, name)                   -> 'p1' | 'p2' | 'full' | 'missing'
+//   watch(code, cb)                                  -> unsubscribe
+//   submitAnswer(code, slot, index, value)           -> Promise
+//   setProgress(code, slot, index)                   -> Promise
+//   claimRematch(code, candidate)                    -> der gültige Revanche-Code
+//
+// `watch` liefert das Spiel immer in dieser Form:
+//   { questionIds, p1, p2, progress: { p1, p2 }, answers: { [i]: { p1, p2 } }, rematch }
 
-import { FIREBASE_CONFIG } from './config.js';
+import { SUPABASE_CONFIG } from './config.js';
 
-const SDK = 'https://www.gstatic.com/firebasejs/12.0.0';
+const SDK = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3/+esm';
 
-export function isFirebaseConfigured() {
-  const c = FIREBASE_CONFIG;
-  return Boolean(c && c.apiKey && c.databaseURL && !String(c.apiKey).startsWith('HIER_'));
+// Realtime ist der schnelle Weg; zusätzlich wird regelmäßig nachgeschaut,
+// damit ein Spiel auch dann weiterläuft, wenn die Live-Verbindung klemmt.
+const POLL_MS = 5000;
+
+export function isSupabaseConfigured() {
+  const c = SUPABASE_CONFIG;
+  return Boolean(
+    c && c.url && c.anonKey
+    && !String(c.url).startsWith('HIER_')
+    && !String(c.anonKey).startsWith('HIER_'),
+  );
 }
 
 export class TransportError extends Error {
@@ -29,103 +40,239 @@ export class TransportError extends Error {
   }
 }
 
-/* ------------------------------------------------------------------ Firebase */
+/* ------------------------------------------------------------------ Supabase */
 
-async function createFirebaseTransport() {
-  const [appMod, authMod, dbMod] = await Promise.all([
-    import(`${SDK}/firebase-app.js`),
-    import(`${SDK}/firebase-auth.js`),
-    import(`${SDK}/firebase-database.js`),
-  ]);
+/** Übersetzt Postgres-Fehler in etwas, das man auch ohne SQL-Kenntnisse versteht. */
+function toTransportError(error, action) {
+  const code = String(error.code || '');
+  const text = String(error.message || '');
 
-  const app = appMod.initializeApp(FIREBASE_CONFIG);
-  const auth = authMod.getAuth(app);
+  if (code === '42P01' || /relation .* does not exist/i.test(text)) {
+    return new TransportError(
+      'Die Datenbanktabellen fehlen.',
+      'supabase/schema.sql im SQL-Editor von Supabase einmal ausführen.',
+    );
+  }
+  if (code === '42501' || /row-level security/i.test(text)) {
+    return new TransportError(
+      'Die Datenbank verweigert den Zugriff.',
+      'Die Richtlinien aus supabase/schema.sql fehlen – Skript nochmal ausführen.',
+    );
+  }
+  if (/JWT|API key|Invalid authentication/i.test(text)) {
+    return new TransportError(
+      'Der anon-Schlüssel wird nicht akzeptiert.',
+      'In js/config.js den anon public key aus Project Settings → API prüfen.',
+    );
+  }
+  if (/fetch|network|Failed to fetch/i.test(text)) {
+    return new TransportError(
+      'Keine Verbindung zur Datenbank.',
+      'Internetverbindung prüfen und ob die Project URL in js/config.js stimmt.',
+    );
+  }
+  return new TransportError(`${action} fehlgeschlagen: ${text}`);
+}
 
+/** Aus den beiden Tabellen wird die Spielstruktur, die die App erwartet. */
+function shapeGame(row, answerRows) {
+  const answers = {};
+  for (const a of answerRows || []) {
+    if (!answers[a.q_index]) answers[a.q_index] = {};
+    answers[a.q_index][a.slot] = { value: a.value };
+  }
+  return {
+    questionIds: row.question_ids || [],
+    p1: row.p1_id ? { id: row.p1_id, name: row.p1_name } : null,
+    p2: row.p2_id ? { id: row.p2_id, name: row.p2_name } : null,
+    progress: { p1: row.p1_progress || 0, p2: row.p2_progress || 0 },
+    answers,
+    rematch: row.rematch || null,
+  };
+}
+
+async function createSupabaseTransport() {
+  let createClient;
   try {
-    await authMod.signInAnonymously(auth);
+    ({ createClient } = await import(SDK));
   } catch (err) {
-    if (String(err.code || '').includes('operation-not-allowed') ||
-        String(err.code || '').includes('admin-restricted-operation')) {
-      throw new TransportError(
-        'Anonyme Anmeldung ist in deinem Firebase-Projekt nicht aktiviert.',
-        'Firebase Console → Authentication → Sign-in method → „Anonym" aktivieren.',
-      );
-    }
-    throw new TransportError(`Anmeldung bei Firebase fehlgeschlagen: ${err.message}`);
+    throw new TransportError(
+      'Die Supabase-Bibliothek konnte nicht geladen werden.',
+      `Internetverbindung prüfen (${err.message}).`,
+    );
   }
 
-  const db = dbMod.getDatabase(app);
-  const gameRef = (code, path) =>
-    dbMod.ref(db, path ? `games/${code}/${path}` : `games/${code}`);
+  const db = createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 
-  const wrap = async (fn, action) => {
-    try {
-      return await fn();
-    } catch (err) {
-      if (String(err.message || '').toLowerCase().includes('permission')) {
-        throw new TransportError(
-          `Die Datenbank hat den Zugriff verweigert (${action}).`,
-          'Prüfe die Regeln der Realtime Database – siehe README.',
-        );
-      }
-      throw new TransportError(`${action} fehlgeschlagen: ${err.message}`);
-    }
+  const unwrap = (result, action) => {
+    if (result.error) throw toTransportError(result.error, action);
+    return result.data;
   };
 
+  const readGame = async (code) => {
+    const row = unwrap(
+      await db.from('games').select('*').eq('code', code).maybeSingle(),
+      'Spiel laden',
+    );
+    if (!row) return null;
+    const answers = unwrap(
+      await db.from('answers').select('q_index, slot, value').eq('code', code),
+      'Schätzungen laden',
+    );
+    return shapeGame(row, answers);
+  };
+
+  // Aktive Beobachter je Spielcode. Nach eigenen Schreibzugriffen wird der
+  // Spielstand sofort neu geladen, statt auf Realtime oder den Takt zu warten.
+  const loaders = new Map();
+  const refresh = (code) => loaders.get(code)?.() ?? Promise.resolve();
+
   return {
-    kind: 'firebase',
+    kind: 'supabase',
 
-    create: (code, data) =>
-      wrap(async () => {
-        const res = await dbMod.runTransaction(gameRef(code), (current) =>
-          current === null ? data : undefined);
-        return res.committed;
-      }, 'Spiel anlegen'),
-
-    join: (code, playerId, name) =>
-      wrap(async () => {
-        let outcome = 'missing';
-        await dbMod.runTransaction(gameRef(code), (game) => {
-          if (game === null) { outcome = 'missing'; return undefined; }
-          if (game.p1 && game.p1.id === playerId) {
-            outcome = 'p1';
-            game.p1.name = name;
-            return game;
-          }
-          if (game.p2 && game.p2.id === playerId) {
-            outcome = 'p2';
-            game.p2.name = name;
-            return game;
-          }
-          if (!game.p2) {
-            outcome = 'p2';
-            game.p2 = { id: playerId, name };
-            return game;
-          }
-          outcome = 'full';
-          return undefined;
-        });
-        return outcome;
-      }, 'Spiel beitreten'),
-
-    watch: (code, cb) => {
-      const unsub = dbMod.onValue(gameRef(code), (snap) => cb(snap.val()));
-      return () => unsub();
+    async createGame(code, { questionIds, host, guest }) {
+      // „ignoreDuplicates" lässt Postgres den Konflikt selbst abfangen: Ist der
+      // Code schon vergeben, kommt einfach keine Zeile zurück. Das macht auch
+      // die Revanche gefahrlos, bei der beide Geräte gleichzeitig anlegen.
+      const rows = unwrap(
+        await db.from('games')
+          .upsert({
+            code,
+            question_ids: questionIds,
+            p1_id: host.id,
+            p1_name: host.name,
+            p2_id: guest ? guest.id : null,
+            p2_name: guest ? guest.name : null,
+          }, { onConflict: 'code', ignoreDuplicates: true })
+          .select('code'),
+        'Spiel anlegen',
+      );
+      return Boolean(rows && rows.length);
     },
 
-    set: (code, path, value) =>
-      wrap(() => dbMod.set(gameRef(code, path), value), 'Speichern'),
+    async joinGame(code, playerId, name) {
+      const row = unwrap(
+        await db.from('games').select('code, p1_id, p2_id').eq('code', code).maybeSingle(),
+        'Spiel suchen',
+      );
+      if (!row) return 'missing';
 
-    claim: (code, path, value) =>
-      wrap(async () => {
-        let winner = value;
-        await dbMod.runTransaction(gameRef(code, path), (current) => {
-          if (current == null) return value;
-          winner = current;
-          return undefined;
-        });
-        return winner;
-      }, 'Reservieren'),
+      // Rückkehr auf denselben Platz – nur der Name wird aufgefrischt.
+      if (row.p1_id === playerId) {
+        unwrap(await db.from('games').update({ p1_name: name }).eq('code', code), 'Beitreten');
+        return 'p1';
+      }
+      if (row.p2_id === playerId) {
+        unwrap(await db.from('games').update({ p2_name: name }).eq('code', code), 'Beitreten');
+        return 'p2';
+      }
+      if (row.p2_id) return 'full';
+
+      // Platz 2 belegen. Die Bedingung „nur wenn noch frei" macht das atomar,
+      // auch wenn zwei Geräte im selben Moment beitreten.
+      const claimed = unwrap(
+        await db.from('games')
+          .update({ p2_id: playerId, p2_name: name })
+          .eq('code', code).is('p2_id', null)
+          .select('p2_id'),
+        'Beitreten',
+      );
+      if (claimed && claimed.length) return 'p2';
+
+      const after = unwrap(
+        await db.from('games').select('p2_id').eq('code', code).maybeSingle(),
+        'Beitreten',
+      );
+      return after && after.p2_id === playerId ? 'p2' : 'full';
+    },
+
+    watch(code, cb) {
+      let stopped = false;
+      let running = false;
+      let rerun = false;
+
+      const load = async () => {
+        if (stopped) return;
+        // Läuft schon eine Abfrage, danach genau einmal nachlegen – sonst
+        // ginge eine Änderung verloren, die währenddessen eingetroffen ist.
+        if (running) { rerun = true; return; }
+        running = true;
+        try {
+          do {
+            rerun = false;
+            const game = await readGame(code);
+            if (!stopped) cb(game);
+          } while (rerun && !stopped);
+        } catch (err) {
+          console.warn('Spielstand konnte nicht geladen werden:', err.message);
+        } finally {
+          running = false;
+        }
+      };
+      loaders.set(code, load);
+
+      const channel = db.channel(`spiel:${code}`)
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'games', filter: `code=eq.${code}` }, load)
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'answers', filter: `code=eq.${code}` }, load)
+        .subscribe();
+
+      const timer = setInterval(() => {
+        if (document.visibilityState === 'visible') load();
+      }, POLL_MS);
+
+      // Nach dem Zurückholen aus dem Hintergrund sofort nachschauen.
+      const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+      document.addEventListener('visibilitychange', onVisible);
+
+      load();
+
+      return () => {
+        stopped = true;
+        if (loaders.get(code) === load) loaders.delete(code);
+        clearInterval(timer);
+        document.removeEventListener('visibilitychange', onVisible);
+        db.removeChannel(channel);
+      };
+    },
+
+    async submitAnswer(code, slot, index, value) {
+      unwrap(
+        await db.from('answers')
+          .upsert({ code, q_index: index, slot, value }, { onConflict: 'code,q_index,slot' }),
+        'Schätzung speichern',
+      );
+      await refresh(code);
+    },
+
+    async setProgress(code, slot, index) {
+      const column = slot === 'p1' ? 'p1_progress' : 'p2_progress';
+      unwrap(
+        await db.from('games').update({ [column]: index }).eq('code', code),
+        'Fortschritt speichern',
+      );
+      await refresh(code);
+    },
+
+    async claimRematch(code, candidate) {
+      const claimed = unwrap(
+        await db.from('games')
+          .update({ rematch: candidate })
+          .eq('code', code).is('rematch', null)
+          .select('rematch'),
+        'Revanche starten',
+      );
+      if (claimed && claimed.length) return candidate;
+
+      const row = unwrap(
+        await db.from('games').select('rematch').eq('code', code).maybeSingle(),
+        'Revanche starten',
+      );
+      return (row && row.rematch) || candidate;
+    },
   };
 }
 
@@ -139,14 +286,14 @@ function createLocalTransport() {
   const read = (code) => {
     try { return JSON.parse(localStorage.getItem(KEY(code))); } catch { return null; }
   };
+  const notify = (code) => {
+    const game = read(code);
+    watchers.get(code)?.forEach((cb) => cb(game));
+  };
   const write = (code, game) => {
     localStorage.setItem(KEY(code), JSON.stringify(game));
     notify(code);
     channel?.postMessage(code);
-  };
-  const notify = (code) => {
-    const game = read(code);
-    watchers.get(code)?.forEach((cb) => cb(game));
   };
 
   channel?.addEventListener('message', (e) => notify(e.data));
@@ -157,19 +304,28 @@ function createLocalTransport() {
   return {
     kind: 'local',
 
-    async create(code, data) {
+    async createGame(code, { questionIds, host, guest }) {
       if (read(code)) return false;
-      write(code, data);
+      write(code, {
+        questionIds,
+        p1: { id: host.id, name: host.name },
+        p2: guest ? { id: guest.id, name: guest.name } : null,
+        progress: { p1: 0, p2: 0 },
+        answers: {},
+        rematch: null,
+      });
       return true;
     },
 
-    async join(code, playerId, name) {
+    async joinGame(code, playerId, name) {
       const game = read(code);
       if (!game) return 'missing';
       if (game.p1 && game.p1.id === playerId) { game.p1.name = name; write(code, game); return 'p1'; }
       if (game.p2 && game.p2.id === playerId) { game.p2.name = name; write(code, game); return 'p2'; }
-      if (!game.p2) { game.p2 = { id: playerId, name }; write(code, game); return 'p2'; }
-      return 'full';
+      if (game.p2) return 'full';
+      game.p2 = { id: playerId, name };
+      write(code, game);
+      return 'p2';
     },
 
     watch(code, cb) {
@@ -179,26 +335,29 @@ function createLocalTransport() {
       return () => watchers.get(code)?.delete(cb);
     },
 
-    async set(code, path, value) {
+    async submitAnswer(code, slot, index, value) {
       const game = read(code);
       if (!game) return;
-      const parts = path.split('/');
-      let node = game;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (typeof node[parts[i]] !== 'object' || node[parts[i]] === null) node[parts[i]] = {};
-        node = node[parts[i]];
-      }
-      node[parts[parts.length - 1]] = value;
+      if (!game.answers) game.answers = {};
+      if (!game.answers[index]) game.answers[index] = {};
+      game.answers[index][slot] = { value };
       write(code, game);
     },
 
-    async claim(code, path, value) {
+    async setProgress(code, slot, index) {
       const game = read(code);
-      if (!game) return value;
-      const current = path.split('/').reduce((n, k) => (n == null ? n : n[k]), game);
-      if (current != null) return current;
-      await this.set(code, path, value);
-      return value;
+      if (!game) return;
+      game.progress = { ...game.progress, [slot]: index };
+      write(code, game);
+    },
+
+    async claimRematch(code, candidate) {
+      const game = read(code);
+      if (!game) return candidate;
+      if (game.rematch) return game.rematch;
+      game.rematch = candidate;
+      write(code, game);
+      return candidate;
     },
   };
 }
@@ -206,6 +365,6 @@ function createLocalTransport() {
 /* -------------------------------------------------------------------- Factory */
 
 export async function createTransport() {
-  if (isFirebaseConfigured()) return createFirebaseTransport();
+  if (isSupabaseConfigured()) return createSupabaseTransport();
   return createLocalTransport();
 }

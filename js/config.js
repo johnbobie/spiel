@@ -1,22 +1,19 @@
-// Firebase-Zugangsdaten.
+// Supabase-Zugangsdaten.
 //
-// Diese Werte sind KEIN Geheimnis – sie stehen bei jeder Firebase-Web-App
-// offen im Quelltext. Der Schutz kommt aus den Datenbank-Regeln (siehe README).
+// Diese beiden Werte sind KEIN Geheimnis – der anon-Schlüssel ist dafür
+// gemacht, offen im Browser zu stehen. Der Schutz kommt aus den Richtlinien
+// in supabase/schema.sql und daraus, dass man den Spielcode kennen muss.
 //
-// So kommst du an die Werte:
-//   1. https://console.firebase.google.com  ->  Projekt anlegen
-//   2. Build -> Realtime Database -> Datenbank erstellen (Region Europa)
-//   3. Build -> Authentication -> Sign-in method -> „Anonym" aktivieren
-//   4. Projektübersicht -> Web-App (</>) hinzufügen -> Config kopieren
-//   5. Die Werte unten ersetzen und die Datei committen
+// So kommst du an die Werte (ausführlich in der README):
+//   1. https://supabase.com  ->  Projekt anlegen
+//   2. SQL Editor  ->  Inhalt von supabase/schema.sql einfügen  ->  Run
+//   3. Project Settings -> API  ->  Project URL und anon public key kopieren
+//   4. Unten eintragen und die Datei committen
 //
 // Solange hier die Platzhalter stehen, läuft das Spiel im Offline-Testmodus:
 // zwei Browser-Tabs auf demselben Gerät können gegeneinander spielen.
 
-export const FIREBASE_CONFIG = {
-  apiKey: 'AIzaSyCiV7TpLLnBEQ21CmYnYW6Zy-_d2SiyUP8',
-  authDomain: 'wewe-11c69.firebaseapp.com',
-  databaseURL: 'https://wewe-11c69-default-rtdb.europe-west1.firebasedatabase.app',
-  projectId: 'wewe-11c69',
-  appId: '1:884567118296:web:1f225424bdc789903e22ad',
+export const SUPABASE_CONFIG = {
+  url: 'HIER_PROJECT_URL_EINSETZEN',
+  anonKey: 'HIER_ANON_KEY_EINSETZEN',
 };
