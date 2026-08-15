@@ -14,6 +14,6 @@
 // zwei Browser-Tabs auf demselben Gerät können gegeneinander spielen.
 
 export const SUPABASE_CONFIG = {
-  url: 'HIER_PROJECT_URL_EINSETZEN',
-  anonKey: 'HIER_ANON_KEY_EINSETZEN',
+  url: 'https://npbhujmryvuqnznenbjv.supabase.co',
+  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5wYmh1am1yeXZ1cW56bmVuYmp2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3ODMwMDMsImV4cCI6MjEwMjM1OTAwM30.Ha3B8fODx1H_jgShA186mQ1IptI7RAqygtd6B5DAkRQ',
 };
