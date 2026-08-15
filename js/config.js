@@ -14,9 +14,9 @@
 // zwei Browser-Tabs auf demselben Gerät können gegeneinander spielen.
 
 export const FIREBASE_CONFIG = {
-  apiKey: 'HIER_API_KEY_EINSETZEN',
-  authDomain: 'HIER_PROJEKT.firebaseapp.com',
-  databaseURL: 'https://HIER_PROJEKT-default-rtdb.europe-west1.firebasedatabase.app',
-  projectId: 'HIER_PROJEKT',
-  appId: 'HIER_APP_ID',
+  apiKey: 'AIzaSyCiV7TpLLnBEQ21CmYnYW6Zy-_d2SiyUP8',
+  authDomain: 'wewe-11c69.firebaseapp.com',
+  databaseURL: 'https://wewe-11c69-default-rtdb.europe-west1.firebasedatabase.app',
+  projectId: 'wewe-11c69',
+  appId: '1:884567118296:web:1f225424bdc789903e22ad',
 };
