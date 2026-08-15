@@ -1,0 +1,20 @@
+{
+  "name": "Schätzduell",
+  "short_name": "Schätzduell",
+  "description": "Allgemeinwissen schätzen zu zweit – auf zwei Geräten, wann ihr wollt.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14121f",
+  "theme_color": "#14121f",
+  "lang": "de",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
